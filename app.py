@@ -123,6 +123,8 @@ def process_image():
         file1 = request.files.get('file')
         file2 = request.files.get('file2')
         operation = (request.form.get('operation') or '').strip().lower()
+        print(f"🔍 Received operation: {operation}")
+
 
         img1 = read_image_file(file1)
         img2 = read_image_file(file2) if file2 else None
