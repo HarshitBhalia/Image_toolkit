@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Image Processing Toolkit</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+
+<body>
+  <div class="container">
+    <h1>🧠 Image & Video Processing Toolkit</h1>
+    <p class="subtitle">An all-in-one visual API for Computer Vision Experiments</p>
+
+    <form id="uploadForm">
+      <label class="file-label">
+        <input type="file" name="file" accept="image/*" required>
+        Choose Main Image
+      </label>
+
+      <label class="file-label secondary">
+        <input type="file" name="file2" accept="image/*">
+        (Optional) Choose Second Image (for Bitwise Ops)
+      </label>
+
+      <select name="operation" id="operation" required>
+        <optgroup label="🧩 Module 1: Bitwise Operations">
+          <option value="bitwise_and">Bitwise AND</option>
+          <option value="bitwise_or">Bitwise OR</option>
+          <option value="bitwise_not">Bitwise NOT</option>
+          <option value="bitwise_xor">Bitwise XOR</option>
+        </optgroup>
+
+        <optgroup label="🎨 Module 2: Color Models & Enhancement">
+          <option value="bgr_to_luminance_gray">BGR → Grayscale (Luminance)</option>
+          <option value="apply_colormap_hot">Pseudo Color (HOT)</option>
+          <option value="bgr_to_cmy">RGB → CMY</option>
+          <option value="bgr_to_cmyk">RGB → CMYK</option>
+          <option value="bgr_to_ycbcr">RGB → YCbCr</option>
+          <option value="intensity_slice_2">2-Slice Intensity Coding</option>
+          <option value="intensity_slice_n">8-Slice Intensity Coding</option>
+        </optgroup>
+
+        <optgroup label="📐 Module 3: Geometric Transformations">
+          <option value="scale">Scaling</option>
+          <option value="rotate">Rotation</option>
+          <option value="translate">Translation</option>
+          <option value="shear">Shear (X/Y)</option>
+          <option value="reflect">Reflection</option>
+        </optgroup>
+
+        <optgroup label="⚡ Module 4: Intensity Transformations">
+          <option value="negative_intensity">Negative</option>
+          <option value="log_transform">Logarithmic</option>
+          <option value="inverse_log">Inverse Log</option>
+          <option value="power_law">Power Law (Gamma)</option>
+          <option value="contrast_stretch">Contrast Stretching</option>
+          <option value="piecewise_linear">Piecewise Linear</option>
+        </optgroup>
+
+        <optgroup label="📊 Module 5: Histogram Operations">
+          <option value="hist_eq">Histogram Equalization</option>
+        </optgroup>
+
+        <optgroup label="🔍 Module 6: Smoothing & Filtering">
+          <option value="box_filter">Box (Mean) Filter</option>
+          <option value="weighted_filter">Weighted Average Filter</option>
+          <option value="gaussian_sigma">Gaussian Filter (σ)</option>
+          <option value="min_filter">Min Filter</option>
+          <option value="max_filter">Max Filter</option>
+          <option value="median_filter">Median Filter</option>
+          <option value="midpoint_filter">Midpoint Filter</option>
+        </optgroup>
+
+        <optgroup label="🧮 Module 7: Mean Variants">
+          <option value="arithmetic_mean">Arithmetic Mean</option>
+          <option value="geometric_mean">Geometric Mean</option>
+          <option value="harmonic_mean">Harmonic Mean</option>
+          <option value="contra_harmonic">Contra-Harmonic Mean</option>
+          <option value="alpha_trimmed">Alpha-Trimmed Mean</option>
+        </optgroup>
+
+        <optgroup label="💥 Module 8: Sharpening & Edge Detection">
+          <option value="unsharp_mask">Unsharp Mask</option>
+          <option value="high_boost">High Boost Filter</option>
+          <option value="prewitt">Prewitt Operator</option>
+          <option value="sobel">Sobel Operator</option>
+          <option value="laplacian">Laplacian</option>
+          <option value="log">Laplacian of Gaussian (LoG)</option>
+          <option value="canny">Canny Edge Detection</option>
+        </optgroup>
+
+        <optgroup label="🏁 Module 9: Feature Detection & Hough">
+          <option value="harris">Harris Corner Detection</option>
+          <option value="hough_lines">Hough Line Transform</option>
+          <option value="hough_circles">Hough Circle Transform</option>
+        </optgroup>
+
+        <optgroup label="⚙️ Module 10: Morphology & Texture">
+          <option value="dilate">Dilation</option>
+          <option value="erode">Erosion</option>
+          <option value="opening">Opening</option>
+          <option value="closing">Closing</option>
+          <option value="hit_or_miss">Hit or Miss</option>
+          <option value="boundary">Boundary Extraction</option>
+          <option value="skeleton">Skeletonization</option>
+          <option value="lbp">Local Binary Pattern (LBP)</option>
+        </optgroup>
+      </select>
+
+      <!-- Dynamic Parameter Section -->
+      <div id="paramControls" class="param-controls"></div>
+
+      <button type="submit">🚀 Process Image</button>
+    </form>
+
+    <div class="results">
+      <div class="compare-container">
+        <h2>🎨 Before & After Comparison</h2>
+        <div class="img-compare">
+          <div class="img-wrapper">
+            <img id="inputImage" src="#" alt="Original" class="hidden"/>
+            <span class="img-label">Before</span>
+          </div>
+          <div class="img-wrapper">
+            <img id="outputImage" src="#" alt="Processed"/>
+            <span class="img-label">After</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="metadata">
+        <h2>🧾 Metadata</h2>
+        <pre id="metaData"></pre>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    <p>Created by <b>Härshit Bhalia</b> & <b>Aryan Chauhan</b> | Powered by OpenCV + Flask</p>
+  </footer>
+
+  <!-- ✅ JavaScript -->
+  <script>
+    const form = document.getElementById("uploadForm");
+    const operationSelect = document.getElementById("operation");
+    const paramControls = document.getElementById("paramControls");
+
+    const inputImage = document.getElementById("inputImage");
+    const outputImage = document.getElementById("outputImage");
+    const metaData = document.getElementById("metaData");
+
+    const paramTemplates = {
+      "power_law": `
+        <label>Gamma (γ): <input type="number" step="0.1" name="gamma" value="1.5"></label>
+      `,
+      "gaussian_sigma": `
+        <label>σ (Sigma): <input type="number" step="0.1" name="sigma" value="1.5"></label>
+      `,
+      "canny": `
+        <label>Low Threshold: <input type="number" name="low" value="50"></label>
+        <label>High Threshold: <input type="number" name="high" value="150"></label>
+      `,
+      "rotate": `
+        <label>Angle (°): <input type="number" name="angle" value="45"></label>
+      `,
+      "scale": `
+        <label>Scale X (fx): <input type="number" step="0.1" name="fx" value="1.2"></label>
+        <label>Scale Y (fy): <input type="number" step="0.1" name="fy" value="1.2"></label>
+      `,
+      "translate": `
+        <label>Translate X (px): <input type="number" name="tx" value="50"></label>
+        <label>Translate Y (px): <input type="number" name="ty" value="30"></label>
+      `,
+      "shear": `
+        <label>Shear X: <input type="number" step="0.1" name="shx" value="0.3"></label>
+        <label>Shear Y: <input type="number" step="0.1" name="shy" value="0"></label>
+      `,
+      "contra_harmonic": `
+        <label>Q (Order): <input type="number" step="0.1" name="Q" value="1.5"></label>
+      `,
+      "alpha_trimmed": `
+        <label>d (Trim Value): <input type="number" name="d" value="2"></label>
+      `,
+      "high_boost": `
+        <label>K (Boost Factor): <input type="number" step="0.1" name="kparam" value="1.5"></label>
+      `
+    };
+
+    operationSelect.addEventListener("change", () => {
+      const op = operationSelect.value;
+      paramControls.innerHTML = paramTemplates[op] || "";
+    });
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+
+      const formData = new FormData(form);
+      const file = formData.get("file");
+
+      // Show preview of input
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        inputImage.src = e.target.result;
+        inputImage.classList.remove("hidden");
+      };
+      reader.readAsDataURL(file);
+
+      try {
+        const res = await fetch("/api/process", { method: "POST", body: formData });
+        const text = await res.text();
+        let data;
+        try {
+          data = JSON.parse(text);
+        } catch (err) {
+          alert("Server returned invalid response:\n" + text);
+          return;
+        }
+
+        if (data.error) {
+          alert("❌ Error: " + data.error);
+          return;
+        }
+
+        outputImage.src = "data:image/png;base64," + data.image_base64;
+        metaData.textContent = JSON.stringify(data.meta, null, 2);
+      } catch (err) {
+        alert("Network error: " + err.message);
+      }
+    });
+  </script>
+</body>
+</html>
