@@ -7,18 +7,30 @@ from skimage.feature import local_binary_pattern
 from skimage import util
 import io
 import os
+from collections import Counter
+import heapq
+
+# HOG
+try:
+    from skimage.feature import hog as sk_hog
+    from skimage import exposure
+except Exception:
+    sk_hog = None
+    exposure = None
 
 app = Flask(__name__, static_folder='static', template_folder='templates')
 
-# Basics
+# Helpers
+
 def cv2_to_base64(img):
-    """Encode OpenCV BGR image (uint8) to PNG base64 string."""
+    """Encode OpenCV BGR image (uint8) to base64 PNG string."""
     if img is None:
         return ""
     if img.dtype != np.uint8:
         img = np.clip(img, 0, 255).astype(np.uint8)
     _, buf = cv2.imencode('.png', img)
     return base64.b64encode(buf).decode('utf-8')
+
 
 def read_image_file(file_storage):
     """Read uploaded FileStorage into BGR OpenCV image or None."""
@@ -31,38 +43,52 @@ def read_image_file(file_storage):
     img = cv2.imdecode(arr, cv2.IMREAD_UNCHANGED)
     if img is None:
         return None
+    # Remove alpha if present
     if img.ndim == 3 and img.shape[2] == 4:
         img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
     return img
 
+
 def ensure_gray(img):
+    """Return single-channel uint8 grayscale image."""
     if img is None:
         return None
     if img.ndim == 3:
         return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     return img
 
+
 def ensure_bgr(img):
+    """Return 3-channel BGR uint8 image."""
     if img is None:
         return None
     if img.ndim == 2:
         return cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
     return img
 
+
 def match_images_for_binary_op(a, b):
-    """Resize and match channels for bitwise operations."""
+    """
+    Make shapes/channels/dtypes compatible for bitwise operations.
+    Returns tuple (a2, b2).
+    """
     if a is None or b is None:
         return a, b
+    # Resize b to a's size if different
     if a.shape[:2] != b.shape[:2]:
         b = cv2.resize(b, (a.shape[1], a.shape[0]), interpolation=cv2.INTER_AREA)
+    # If different channel counts, convert grayscale->BGR
     if a.ndim != b.ndim:
         if a.ndim == 2:
             a = cv2.cvtColor(a, cv2.COLOR_GRAY2BGR)
         if b.ndim == 2:
             b = cv2.cvtColor(b, cv2.COLOR_GRAY2BGR)
+    # Match dtype (convert to common - prefer uint8)
     if a.dtype != b.dtype:
         b = b.astype(a.dtype)
     return a, b
+
+# Basic 
 
 def normalize_and_uint8(img):
     """Normalize float images to 0-255 uint8."""
@@ -70,14 +96,14 @@ def normalize_and_uint8(img):
         return None
     if img.dtype == np.uint8:
         return img
-    mn = img.min()
-    mx = img.max()
+    mn = float(np.min(img))
+    mx = float(np.max(img))
     if mx - mn <= 1e-8:
         return np.clip(img, 0, 255).astype(np.uint8)
     scaled = (img - mn) * 255.0 / (mx - mn)
     return np.clip(scaled, 0, 255).astype(np.uint8)
 
-# Implementation FxNs
+# Implementations 
 
 # 1) Bitwise - wrappers use match_images_for_binary_op
 def op_bitwise_and(a, b):
@@ -534,9 +560,242 @@ def op_intensity_slice_n(img, n=8):
     cmap = cv2.applyColorMap(normalize_and_uint8(g), cv2.COLORMAP_JET)
     return cmap
 
+# Compression, HOG
+
+# RLE (text output)
+def op_rle_text(img):
+    """Run-Length Encoding over grayscale bytes. Returns text string."""
+    g = ensure_gray(img)
+    flattened = g.flatten().tolist()
+    if len(flattened) == 0:
+        return "", ""
+    out_pairs = []
+    prev = flattened[0]
+    count = 1
+    for v in flattened[1:]:
+        if v == prev:
+            count += 1
+        else:
+            out_pairs.append(f"{prev}:{count}")
+            prev = v
+            count = 1
+    out_pairs.append(f"{prev}:{count}")
+    # return text representation
+    rle_text = " ".join(out_pairs)
+    # For UI consistency return an image too (original) and rle_text in meta
+    return g, rle_text
 
 
-# 🧭 ROUTES
+# Huffman
+class HuffmanNode:
+    def __init__(self, freq, symbol=None, left=None, right=None):
+        self.freq = freq
+        self.symbol = symbol
+        self.left = left
+        self.right = right
+
+    def __lt__(self, other):
+        return self.freq < other.freq
+
+
+def build_huffman_code(freq_map):
+    heap = []
+    for sym, freq in freq_map.items():
+        heapq.heappush(heap, HuffmanNode(freq, symbol=sym))
+    if len(heap) == 0:
+        return {}
+    # edge case: single symbol
+    if len(heap) == 1:
+        node = heapq.heappop(heap)
+        return {node.symbol: "0"}
+    while len(heap) > 1:
+        n1 = heapq.heappop(heap)
+        n2 = heapq.heappop(heap)
+        merged = HuffmanNode(n1.freq + n2.freq, left=n1, right=n2)
+        heapq.heappush(heap, merged)
+    root = heapq.heappop(heap)
+
+    codes = {}
+
+    def traverse(node, prefix=""):
+        if node.symbol is not None:
+            codes[node.symbol] = prefix or "0"
+            return
+        traverse(node.left, prefix + "0")
+        traverse(node.right, prefix + "1")
+
+    traverse(root, "")
+    return codes
+
+
+def op_huffman_visualize(img, max_bits_visual=5_000_000):
+    g = ensure_gray(img)
+    flat = g.flatten().tolist()
+    freq = Counter(flat)
+    codes = build_huffman_code(freq)
+    if not codes:
+        return g, {}, 0, 0
+    # encode
+    bits = "".join(codes[p] for p in flat)
+    nbits = len(bits)
+    # protect extremely large outputs by truncating visualization
+    if nbits > max_bits_visual:
+        bits = bits[:max_bits_visual]
+        nbits = len(bits)
+    # pack bits into rows to make a square-ish binary image
+    w = int(math.ceil(math.sqrt(nbits)))
+    h = int(math.ceil(nbits / w))
+    bin_img = np.zeros((h, w), dtype=np.uint8)
+    for i, bit in enumerate(bits):
+        r = i // w
+        c = i % w
+        bin_img[r, c] = 255 if bit == "1" else 0
+    vis = cv2.cvtColor(bin_img, cv2.COLOR_GRAY2BGR)
+    return vis, codes, nbits, len(flat) * 8
+
+
+# Zig-zag helpers (for DCT blocks)
+def zigzag_indices(n):
+    idx = []
+    for s in range(2 * n - 1):
+        if s % 2 == 0:
+            # even sum - go down
+            for i in range(s + 1):
+                j = s - i
+                if i < n and j < n:
+                    idx.append((i, j))
+        else:
+            # odd sum - go up
+            for j in range(s + 1):
+                i = s - j
+                if i < n and j < n:
+                    idx.append((i, j))
+    return idx[:n * n]
+
+
+ZIGZAG_CACHE = {k: zigzag_indices(k) for k in [4, 8, 16]}
+
+
+def zigzag_flatten(block):
+    n = block.shape[0]
+    idx = ZIGZAG_CACHE.get(n, zigzag_indices(n))
+    return np.array([block[i, j] for (i, j) in idx])
+
+
+def zigzag_restore(flat, n):
+    idx = ZIGZAG_CACHE.get(n, zigzag_indices(n))
+    block = np.zeros((n, n), dtype=flat.dtype)
+    for k, (i, j) in enumerate(idx):
+        if k < len(flat):
+            block[i, j] = flat[k]
+    return block
+
+
+# block DCT compress using zig-zag keep first K coefficients per block
+def op_dct_block_compress(img, block_size=8, keep=10):
+    """Perform block-wise DCT on Y channel, keep first 'keep' zig-zag coefficients per block."""
+    img_bgr = ensure_bgr(img)
+    ycrcb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2YCrCb).astype(np.float32)
+    Y = ycrcb[:, :, 0]
+    h, w = Y.shape
+    # pad to multiple of block_size
+    pad_h = (block_size - (h % block_size)) % block_size
+    pad_w = (block_size - (w % block_size)) % block_size
+    Yp = np.pad(Y, ((0, pad_h), (0, pad_w)), mode='reflect')
+    H, W = Yp.shape
+    outY = np.zeros_like(Yp)
+    for i in range(0, H, block_size):
+        for j in range(0, W, block_size):
+            block = Yp[i:i + block_size, j:j + block_size]
+            block = block - 128.0
+            d = cv2.dct(block)
+            flat = zigzag_flatten(d)
+            # zero out after keep
+            flat[keep:] = 0
+            d2 = zigzag_restore(flat, block_size)
+            idct = cv2.idct(d2) + 128.0
+            outY[i:i + block_size, j:j + block_size] = idct
+    # crop back
+    outY = outY[:h, :w]
+    ycrcb[:, :, 0] = outY
+    out = cv2.cvtColor(ycrcb.astype(np.uint8), cv2.COLOR_YCrCb2BGR)
+    return out
+
+
+# Uniform quantization (levels)
+def op_uniform_quantize(img, levels=8):
+    g = ensure_gray(img)
+    # map to [0, levels-1], then back to 0..255
+    q = np.floor((g.astype(np.float32) * (levels - 1) / 255.0) + 0.5)
+    recon = (q * (255.0 / (levels - 1))).astype(np.uint8)
+    # return BGR for consistency
+    return cv2.cvtColor(recon, cv2.COLOR_GRAY2BGR)
+
+
+# Color compression via KMeans (k)
+def op_color_quant_kmeans(img, k=8):
+    # use cv2.kmeans on pixel color space
+    Z = img.reshape((-1, 3)).astype(np.float32)
+    # criteria, attempts
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 0.1)
+    attempts = 2
+    _, labels, centers = cv2.kmeans(Z, k, None, criteria, attempts, cv2.KMEANS_PP_CENTERS)
+    centers = centers.astype(np.uint8)
+    quant = centers[labels.flatten()].reshape(img.shape)
+    return quant
+
+
+# Shift (translation) with user params shift_x, shift_y
+def op_shift(img, shift_x=0, shift_y=0):
+    h, w = img.shape[:2]
+    M = np.float32([[1, 0, shift_x], [0, 1, shift_y]])
+    return cv2.warpAffine(img, M, (w, h), borderMode=cv2.BORDER_REFLECT)
+
+
+# HOG visualization
+def op_hog_visualize(img, pixels_per_cell=(8, 8), cells_per_block=(2, 2), orientations=9):
+    if sk_hog is None:
+        # fallback: return grayscale if skimage not installed
+        return cv2.cvtColor(ensure_gray(img), cv2.COLOR_GRAY2BGR)
+    g = ensure_gray(img)
+    hog_img, hog_vis = sk_hog(g, orientations=orientations, pixels_per_cell=pixels_per_cell,
+                              cells_per_block=cells_per_block, visualize=True, feature_vector=False)
+    # skimage returns an image scaled; rescale for display
+    vis = exposure.rescale_intensity(hog_vis, in_range=(0, np.max(hog_vis)))
+    vis_u8 = normalize_and_uint8((vis * 255.0))
+    return cv2.cvtColor(vis_u8, cv2.COLOR_GRAY2BGR)
+
+# SIFT Feature Detector
+
+def try_sift():
+    """Create a SIFT detector safely."""
+    try:
+        return cv2.SIFT_create()                   # OpenCV 4.5+
+    except:
+        try:
+            return cv2.xfeatures2d.SIFT_create()   # For opencv-contrib
+        except:
+            return None
+
+def op_sift_features(img):
+    """Detect SIFT keypoints and visualize."""
+    sift = try_sift()
+    if sift is None:
+        return cv2.cvtColor(ensure_gray(img), cv2.COLOR_GRAY2BGR), 0
+
+    gray = ensure_gray(img)
+    keypoints, descriptors = sift.detectAndCompute(gray, None)
+
+    vis = cv2.drawKeypoints(
+        img,
+        keypoints,
+        None,
+        flags=cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS,
+        color=(0, 255, 0)
+    )
+    return vis, len(keypoints)
+
+# Route 
 @app.route('/')
 def home():
     try:
@@ -544,13 +803,13 @@ def home():
     except Exception:
         return send_from_directory('.', 'index.html')
 
+
 @app.route('/api/process', methods=['POST'])
 def process_image():
     try:
         file1 = request.files.get('file')
         file2 = request.files.get('file2')
         operation = (request.form.get('operation') or '').strip().lower()
-        print(f"🔍 Operation received: {operation}")  # For Railway logs
 
         img1 = read_image_file(file1)
         img2 = read_image_file(file2) if file2 else None
@@ -558,15 +817,17 @@ def process_image():
         if img1 is None:
             return jsonify({'error': 'No main image uploaded or file invalid.'}), 400
 
+        # fetch params with safe defaults
         def fval(name, cast, default):
             v = request.form.get(name)
-            if v in [None, '']:
+            if v is None or v == '':
                 return default
             try:
                 return cast(v)
             except Exception:
                 return default
 
+        # New/used params
         gamma = fval('gamma', float, 1.0)
         ksize = int(max(1, fval('ksize', int, 3)))
         sigma = fval('sigma', float, 1.0)
@@ -588,9 +849,24 @@ def process_image():
         n = fval('n', int, 8)
         kparam = fval('kparam', float, 1.5)
 
+        # New params for added features
+        rle_text_flag = request.form.get('rle_flag', '0')  # optional
+        # Huffman nothing extra
+        dct_block_size = int(max(2, fval('dct_block_size', int, 8)))
+        dct_keep = int(max(1, fval('dct_keep', int, 10)))
+        quant_levels = int(max(2, fval('quant_levels', int, 8)))
+        color_k = int(max(1, fval('color_k', int, 8)))
+        shift_x = fval('shift_x', int, 0)
+        shift_y = fval('shift_y', int, 0)
+        hog_ppc = int(max(1, fval('hog_ppc', int, 8)))
+        hog_cpb = int(max(1, fval('hog_cpb', int, 2)))
+        hog_orient = int(max(1, fval('hog_orient', int, 9)))
+
         meta = {'shape': str(img1.shape), 'dtype': str(img1.dtype), 'operation': operation}
-        result = None
-# BITWISE
+
+        result = None  # default
+
+        # BITWISE
         if operation in ['bitwise_and', 'bitwise_or', 'bitwise_xor']:
             if img2 is None:
                 return jsonify({'error': f'{operation} requires a second image in file2.'}), 400
@@ -774,13 +1050,61 @@ def process_image():
         elif operation == 'intensity_slice_n':
             result = op_intensity_slice_n(img1, n=n)
 
+        elif operation == 'rle_text':
+            # returns original image and RLE text in meta['rle']
+            gray, rle_text = op_rle_text(img1)
+            result = cv2.cvtColor(normalize_and_uint8(gray), cv2.COLOR_GRAY2BGR)
+            meta['rle'] = (rle_text[:5000] + '...') if len(rle_text) > 5000 else rle_text
+            meta['rle_len_pairs'] = len(rle_text.split()) if rle_text else 0
+
+        elif operation == 'huffman_encoded_image':
+            vis, codes, nbits, original_bits = op_huffman_visualize(img1)
+            result = vis
+            meta['huffman_codes'] = {str(k): v for k, v in list(codes.items())[:50]}  # limit listing
+            meta['encoded_bits'] = nbits
+            meta['orig_bits'] = original_bits
+
+        elif operation == 'dct_block':
+            result = op_dct_block_compress(img1, block_size=dct_block_size, keep=dct_keep)
+            meta['dct_block_size'] = dct_block_size
+            meta['dct_keep'] = dct_keep
+
+        elif operation == 'quantize_levels':
+            result = op_uniform_quantize(img1, levels=quant_levels)
+            meta['quant_levels'] = quant_levels
+
+        elif operation == 'zigzag_dct':
+            # perform DCT+zigzag keeping dct_keep coefficients
+            result = op_dct_block_compress(img1, block_size=dct_block_size, keep=dct_keep)
+            meta['zigzag_block'] = dct_block_size
+            meta['zigzag_keep'] = dct_keep
+
+        elif operation == 'color_compress_kmeans':
+            result = op_color_quant_kmeans(img1, k=color_k)
+            meta['color_k'] = color_k
+
+        elif operation == 'shift':
+            result = op_shift(img1, shift_x=shift_x, shift_y=shift_y)
+            meta['shift_x'] = shift_x
+            meta['shift_y'] = shift_y
+
+        elif operation == 'hog_visualize':
+            result = op_hog_visualize(img1, pixels_per_cell=(hog_ppc, hog_ppc),
+                                      cells_per_block=(hog_cpb, hog_cpb), orientations=hog_orient)
+            meta['hog_ppc'] = hog_ppc
+            meta['hog_cpb'] = hog_cpb
+            meta['hog_orient'] = hog_orient
+
+        elif operation == 'sift_features':
+            result, count = op_sift_features(img1)
+            meta['sift_keypoints'] = count
+
         else:
             return jsonify({'error': f'Unknown operation: {operation}'}), 400
 
+        # Prepare response - ensure BGR uint8
         if result is None:
-            print(f"⚠️ No result produced for operation: {operation}")
             return jsonify({'error': 'Operation produced no output.'}), 500
-
         if result.dtype != np.uint8:
             result = normalize_and_uint8(result)
         if result.ndim == 2:
@@ -791,15 +1115,13 @@ def process_image():
         return jsonify({'image_base64': b64, 'meta': meta})
 
     except Exception as e:
-        print(f"❌ Internal server error: {str(e)}")
-        return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+        return jsonify({'error': 'Internal server error', 'detail': str(e)}), 500
 
 @app.route('/health')
 def health():
-    return jsonify({'status': 'ok'}), 200
+    return jsonify({'status': 'ok'})
 
-# Railway PORT
+
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    print(f"🚀 Starting Flask on port {port}")
     app.run(host='0.0.0.0', port=port, debug=False)
