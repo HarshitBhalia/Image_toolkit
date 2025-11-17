@@ -1,3 +1,14 @@
+
+
+
+
+
+
+
+
+
+
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -23,7 +34,7 @@
         (Optional) Choose Second Image (for Bitwise Ops)
       </label>
 
-      <select name="operation" id="operation" required>
+      <select name="operation" id="operation" size="10">
         <optgroup label="🧩 Module 1: Bitwise Operations">
           <option value="bitwise_and">Bitwise AND</option>
           <option value="bitwise_or">Bitwise OR</option>
@@ -86,7 +97,7 @@
           <option value="prewitt">Prewitt Operator</option>
           <option value="sobel">Sobel Operator</option>
           <option value="laplacian">Laplacian</option>
-          <option value="log">Laplacian of Gaussian (LoG)</option>
+          <option value="log_of_gaussian">Laplacian of Gaussian (LoG)</option>
           <option value="canny">Canny Edge Detection</option>
         </optgroup>
 
@@ -106,10 +117,24 @@
           <option value="skeleton">Skeletonization</option>
           <option value="lbp">Local Binary Pattern (LBP)</option>
         </optgroup>
+
+        <optgroup label="🗜️ Compression & Advanced (NEW)">
+          <option value="rle_text">RLE (Run-Length Encoding) — text output</option>
+          <option value="huffman_encoded_image">Huffman — encoded image (visual)</option>
+          <option value="dct_block">DCT Block compress (zig-zag keep)</option>
+          <option value="quantize_levels">Uniform Quantization (levels)</option>
+          <option value="zigzag_dct">Zig-Zag DCT (visualize)</option>
+          <option value="color_compress_kmeans">Color Compression (K-Means)</option>
+          <option value="shift">Shift / Translate (shift_x, shift_y)</option>
+          <option value="hog_visualize">HOG — visualize</option>
+          <option value="sift_features">SIFT Feature Detection</option>
+
+        </optgroup>
       </select>
 
-      <!-- Dynamic Parameter Section -->
-      <div id="paramControls" class="param-controls"></div>
+      <div id="params" class="params-panel">
+        <!-- dynamic params will be injected here -->
+      </div>
 
       <button type="submit">🚀 Process Image</button>
     </form>
@@ -140,56 +165,88 @@
     <p>Created by <b>Härshit Bhalia</b> & <b>Aryan Chauhan</b> | Powered by OpenCV + Flask</p>
   </footer>
 
-  <!-- ✅ JavaScript -->
+  <!-- JavaScript logic for Upload + Process + dynamic params -->
   <script>
     const form = document.getElementById("uploadForm");
     const operationSelect = document.getElementById("operation");
-    const paramControls = document.getElementById("paramControls");
-
-    const inputImage = document.getElementById("inputImage");
+    const paramsPanel = document.getElementById("params");
     const outputImage = document.getElementById("outputImage");
+    const inputImage = document.getElementById("inputImage");
     const metaData = document.getElementById("metaData");
 
     const paramTemplates = {
-      "power_law": `
-        <label>Gamma (γ): <input type="number" step="0.1" name="gamma" value="1.5"></label>
-      `,
-      "gaussian_sigma": `
-        <label>σ (Sigma): <input type="number" step="0.1" name="sigma" value="1.5"></label>
-      `,
-      "canny": `
-        <label>Low Threshold: <input type="number" name="low" value="50"></label>
-        <label>High Threshold: <input type="number" name="high" value="150"></label>
-      `,
-      "rotate": `
-        <label>Angle (°): <input type="number" name="angle" value="45"></label>
-      `,
-      "scale": `
-        <label>Scale X (fx): <input type="number" step="0.1" name="fx" value="1.2"></label>
-        <label>Scale Y (fy): <input type="number" step="0.1" name="fy" value="1.2"></label>
-      `,
-      "translate": `
-        <label>Translate X (px): <input type="number" name="tx" value="50"></label>
-        <label>Translate Y (px): <input type="number" name="ty" value="30"></label>
-      `,
-      "shear": `
-        <label>Shear X: <input type="number" step="0.1" name="shx" value="0.3"></label>
-        <label>Shear Y: <input type="number" step="0.1" name="shy" value="0"></label>
-      `,
-      "contra_harmonic": `
-        <label>Q (Order): <input type="number" step="0.1" name="Q" value="1.5"></label>
-      `,
-      "alpha_trimmed": `
-        <label>d (Trim Value): <input type="number" name="d" value="2"></label>
-      `,
-      "high_boost": `
-        <label>K (Boost Factor): <input type="number" step="0.1" name="kparam" value="1.5"></label>
-      `
+      
+      dct_block: [
+        {name: 'dct_block_size', label: 'Block size (8 recommended)', type: 'number', value: 8, min:2},
+        {name: 'dct_keep', label: 'Keep first K zig-zag coefficients', type: 'number', value: 10, min:1}
+      ],
+      zigzag_dct: [
+        {name: 'dct_block_size', label: 'Block size', type: 'number', value: 8, min:2},
+        {name: 'dct_keep', label: 'Keep first K coefficients', type: 'number', value: 10, min:1}
+      ],
+      quantize_levels: [
+        {name: 'quant_levels', label: 'Quantization levels', type: 'number', value: 8, min:2}
+      ],
+      color_compress_kmeans: [
+        {name: 'color_k', label: 'K (colors)', type: 'number', value: 8, min:1}
+      ],
+      shift: [
+        {name: 'shift_x', label: 'shift_x (pixels, +right)', type: 'number', value: 0},
+        {name: 'shift_y', label: 'shift_y (pixels, +down)', type: 'number', value: 0}
+      ],
+      hog_visualize: [
+        {name: 'hog_ppc', label: 'pixels_per_cell', type: 'number', value: 8, min:1},
+        {name: 'hog_cpb', label: 'cells_per_block', type: 'number', value: 2, min:1},
+        {name: 'hog_orient', label: 'orientations', type: 'number', value: 9, min:1}
+      ],
+    
+      rle_text: [],
+      huffman_encoded_image: []
     };
 
-    operationSelect.addEventListener("change", () => {
-      const op = operationSelect.value;
-      paramControls.innerHTML = paramTemplates[op] || "";
+    function clearParams() {
+      paramsPanel.innerHTML = '';
+    }
+
+    function renderParamsFor(op) {
+      clearParams();
+      const templ = paramTemplates[op];
+      if (!templ) return;
+      templ.forEach(p => {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'param-row';
+        const label = document.createElement('label');
+        label.innerText = p.label;
+        label.htmlFor = p.name;
+        const input = document.createElement('input');
+        input.type = p.type;
+        input.name = p.name;
+        input.id = p.name;
+        input.value = p.value;
+        if (p.min !== undefined) input.min = p.min;
+        wrapper.appendChild(label);
+        wrapper.appendChild(input);
+        paramsPanel.appendChild(wrapper);
+      });
+    }
+
+
+    operationSelect.addEventListener('change', (e) => {
+      renderParamsFor(e.target.value);
+    });
+    renderParamsFor(operationSelect.value);
+
+   
+    const fileInput = document.querySelector('input[name="file"]');
+    fileInput.addEventListener('change', (ev) => {
+      const file = ev.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        inputImage.src = e.target.result;
+        inputImage.classList.remove("hidden");
+      };
+      reader.readAsDataURL(file);
     });
 
     form.addEventListener("submit", async (e) => {
@@ -197,15 +254,13 @@
 
       const formData = new FormData(form);
       const file = formData.get("file");
+      if (!file || file.size === 0) {
+        alert("Please select an image file.");
+        return;
+      }
 
-      // Show preview of input
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        inputImage.src = e.target.result;
-        inputImage.classList.remove("hidden");
-      };
-      reader.readAsDataURL(file);
-
+      // ensure we pick up dynamic params (already inserted into DOM)
+      // send formData directly
       try {
         const res = await fetch("/api/process", { method: "POST", body: formData });
         const text = await res.text();
@@ -213,19 +268,22 @@
         try {
           data = JSON.parse(text);
         } catch (err) {
-          alert("Server returned invalid response:\n" + text);
+          alert("Server returned non-JSON response:\n" + text);
           return;
         }
 
         if (data.error) {
-          alert("❌ Error: " + data.error);
+          alert("❌ Error: " + (data.error || 'Unknown'));
+          console.error(data);
           return;
         }
 
-        outputImage.src = "data:image/png;base64," + data.image_base64;
-        metaData.textContent = JSON.stringify(data.meta, null, 2);
-      } catch (err) {
-        alert("Network error: " + err.message);
+        if (data.image_base64) {
+          outputImage.src = "data:image/png;base64," + data.image_base64;
+        }
+        metaData.textContent = JSON.stringify(data.meta || {}, null, 2);
+      } catch (error) {
+        alert("Network error: " + error.message);
       }
     });
   </script>
